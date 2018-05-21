@@ -2,14 +2,13 @@
 
 #define INSN_PER_SLICE 1000000
 
-Thread::Thread(Ctu *_ctu, int _id) : ctu(_ctu), id(_id) {
+Thread::Thread(Ctu *_ctu, int _id) : ctu(_ctu), id(_id), started(false) {
 	active = false;
 	memset(&regs, 0, sizeof(ThreadRegisters));
 
-	auto tlsSize = 1024 * 1024;
+	auto tlsSize = 0x1000;
 	tlsBase = (1 << 24) + tlsSize * _id;
 	ctu->cpu.map(tlsBase, tlsSize);
-	ctu->cpu.guestptr<gptr>(tlsBase + 0x1F8) = tlsBase + 0x200;
 }
 
 void Thread::assignHandle(uint32_t _handle) {
@@ -18,7 +17,10 @@ void Thread::assignHandle(uint32_t _handle) {
 }
 
 void Thread::terminate() {
+	signal();
 	ctu->tm.terminate(id);
+	auto tlsSize = 0x1000;
+	ctu->cpu.unmap(tlsBase, tlsSize);
 }
 
 void Thread::suspend(function<void()> cb) {
@@ -41,6 +43,7 @@ void Thread::resume(function<void()> cb) {
 
 	if(cb != nullptr)
 		onWake(cb);
+	started = true;
 	active = true;
 	ctu->tm.enqueue(id);
 }
@@ -102,6 +105,12 @@ void ThreadManager::start() {
 	while(true) {
 		if(ctu->gdbStub.enabled) {
 			ctu->gdbStub.handlePacket();
+			if(ctu->gdbStub.remoteBreak) {
+				ctu->gdbStub.remoteBreak = false;
+				if(_current != nullptr)
+					_current->freeze();
+				ctu->gdbStub.sendSignal(SIGTRAP);
+			}
 			if(ctu->gdbStub.haltLoop && !ctu->gdbStub.stepLoop)
 				continue;
 			auto wasStep = ctu->gdbStub.stepLoop;
@@ -114,7 +123,8 @@ void ThreadManager::start() {
 			ctu->cpu.exec(wasStep ? 1 : INSN_PER_SLICE);
 			if(wasStep) {
 				ctu->gdbStub.haltLoop = ctu->gdbStub.stepLoop = false;
-				_current->freeze();
+				if (_current != nullptr)
+					_current->freeze();
 				ctu->gdbStub._break();
 			}
 		} else {
@@ -130,7 +140,7 @@ shared_ptr<Thread> ThreadManager::create(gptr pc, gptr sp) {
 	threads[thread->id] = thread;
 	thread->regs.PC = pc;
 	thread->regs.SP = sp;
-	thread->regs.X30 = TERMADDR;
+	thread->regs.X30 = 0;
 	return thread;
 }
 
@@ -262,6 +272,26 @@ shared_ptr<Thread> ThreadManager::last() {
 	return _last;
 }
 
+bool ThreadManager::setCurrent(int id) {
+	auto thread = threads.find(id);
+	if (thread == threads.end())
+		return false;
+	if(_current != nullptr) {
+		_current->freeze();
+		_last = _current;
+	}
+	_current = thread->second;
+	_current->thaw();
+	return true;
+}
+
+
 bool ThreadManager::isNative(int id) {
 	return nativeThreads.find(id) != nativeThreads.end();
+}
+
+vector<shared_ptr<Thread>> ThreadManager::thread_list() {
+	vector<shared_ptr<Thread>> vals;
+	transform(threads.begin(), threads.end(), back_inserter(vals), [](auto val){return val.second;} );
+	return vals;
 }

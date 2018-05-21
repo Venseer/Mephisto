@@ -177,6 +177,7 @@ void GdbStub::enable(uint16_t port) {
 
 	enabled = true;
 	haltLoop = true;
+	remoteBreak = false;
 }
 
 uint8_t GdbStub::readByte() {
@@ -242,9 +243,9 @@ void GdbStub::removeBreakpoint(BreakpointType type, gptr addr) {
 
 	auto bp = p.find(addr);
 	if(bp != p.end()) {
-		LOG_DEBUG(GdbStub, "gdb: removed a breakpoint: %016lx bytes at %016lx of type %d",
+		LOG_DEBUG(GdbStub, "gdb: removed a breakpoint: " ADDRFMT " bytes at " ADDRFMT " of type %d",
 				  bp->second.len, bp->second.addr, type);
-		ctu->cpu.removeCodeBreakpoint(bp->second.hook);
+		ctu->cpu.removeBreakpoint(bp->second.hook);
 		p.erase(addr);
 	}
 }
@@ -274,7 +275,7 @@ bool GdbStub::checkBreakpoint(gptr addr, BreakpointType type) {
 
 		if(bp->second.active && (addr >= bp->second.addr && addr < bp->second.addr + len)) {
 			LOG_DEBUG(GdbStub,
-					  "Found breakpoint type %d @ %016lx, range: %016lx - %016lx (%d bytes)", type,
+					  "Found breakpoint type %d @ " ADDRFMT ", range: " ADDRFMT " - " ADDRFMT " (%d bytes)", type,
 					  addr, bp->second.addr, bp->second.addr + len, (uint32_t) len);
 			return true;
 		}
@@ -330,16 +331,37 @@ void GdbStub::handleQuery() {
 	else if(strncmp(query, "Xfer:features:read:target.xml:",
 					   strlen("Xfer:features:read:target.xml:")) == 0)
 		sendReply(target_xml);
+	else if (strncmp(query, "fThreadInfo", strlen("fThreadInfo")) == 0) {
+		auto list = ctu->tm.thread_list();
+		char tmp[17] = {0};
+		string val = "m";
+		for (auto it = list.begin(); it != list.end(); it++) {
+			if (!(*it)->started)
+				continue;
+			memset(tmp, 0, sizeof(tmp));
+			sprintf(tmp, "%x", (*it)->id);
+			val += (char*)tmp;
+			val += ",";
+		}
+		val.pop_back();
+		sendReply(val.c_str());
+	} else if (strncmp(query, "sThreadInfo", strlen("sThreadInfo")) == 0)
+		sendReply("l");
 	else
 		sendReply("");
 }
 
 void GdbStub::handleSetThread() {
-	if(memcmp(commandBuffer, "Hg0", 3) == 0 || memcmp(commandBuffer, "Hc-1", 4) == 0 ||
-		memcmp(commandBuffer, "Hc0", 4) == 0 || memcmp(commandBuffer, "Hc1", 4) == 0)
-		return sendReply("OK");
-
-	sendReply("E01");
+	// TODO: allow actually changing threads now :|
+	if(memcmp(commandBuffer, "Hg", 2) == 0 || memcmp(commandBuffer, "Hc", 2) == 0) {
+		// Get thread id
+		if (commandBuffer[2] != '-') {
+			int threadid = (int)hexToInt(commandBuffer + 2, strlen((char*)commandBuffer + 2));
+			ctu->tm.setCurrent(threadid);
+		}
+		sendReply("OK");
+	} else
+		sendReply("E01");
 }
 
 auto stringFromFormat(const char* format, ...) {
@@ -364,6 +386,13 @@ void GdbStub::sendSignal(uint32_t signal) {
 	intToGdbHex(pc, reg(32));
 
 	string buffer = stringFromFormat("T%02x%02x:%.16s;%02x:%.16s;", latestSignal, 32, pc, 31, sp);
+
+	auto curthread = ctu->tm.current();
+	if(curthread == nullptr)
+		curthread = ctu->tm.last();
+	if (curthread != nullptr)
+		buffer += stringFromFormat("thread:%x;", curthread->id);
+
 	LOG_DEBUG(GdbStub, "Response: %s", buffer.c_str());
 	sendReply(buffer.c_str());
 }
@@ -379,7 +408,7 @@ void GdbStub::readCommand() {
 	} else if(c == 0x03) {
 		LOG_INFO(GdbStub, "gdb: found break command");
 		haltLoop = true;
-		sendSignal(SIGTRAP);
+		remoteBreak = true;
 		return;
 	} else if(c != GDB_STUB_START) {
 		LOG_DEBUG(GdbStub, "gdb: read invalid byte %02x", c);
@@ -507,7 +536,7 @@ void GdbStub::readMemory() {
 	start_offset = addr_pos + 1;
 	auto len = hexToInt(start_offset, static_cast<uint32_t>((commandBuffer + commandLength) - start_offset));
 
-	LOG_DEBUG(GdbStub, "gdb: addr: %016lx len: %016lx", addr, len);
+	LOG_DEBUG(GdbStub, "gdb: addr: " ADDRFMT " len: " ADDRFMT, addr, len);
 
 	if(len * 2 > sizeof(reply)) {
 		sendReply("E01");
@@ -574,10 +603,12 @@ bool GdbStub::commitBreakpoint(BreakpointType type, gptr addr, uint32_t len) {
 
 	if(type == BreakpointType::Execute)
 		breakpoint.hook = ctu->cpu.addCodeBreakpoint(addr);
+	else
+		breakpoint.hook = ctu->cpu.addMemoryBreakpoint(addr, len, type);
 
 	p.insert({addr, breakpoint});
 
-	LOG_DEBUG(GdbStub, "gdb: added %d breakpoint: %016lx bytes at %016lx", type, breakpoint.len,
+	LOG_DEBUG(GdbStub, "gdb: added %d breakpoint: " ADDRFMT " bytes at " ADDRFMT, type, breakpoint.len,
 			  breakpoint.addr);
 
 	return true;
@@ -666,6 +697,18 @@ void GdbStub::removeBreakpoint() {
 	sendReply("OK");
 }
 
+void GdbStub::isThreadAlive() {
+	int threadid = (int)hexToInt(commandBuffer + 1, strlen((char*)commandBuffer + 1));
+	auto threads = ctu->tm.thread_list();
+	for (auto it = threads.begin(); it != threads.end(); it++) {
+		if ((*it)->id == threadid) {
+			sendReply("OK");
+			return;
+		}
+	}
+	sendReply("E01");
+}
+
 void GdbStub::handlePacket() {
 	if(!isDataAvailable())
 		return;
@@ -715,6 +758,9 @@ void GdbStub::handlePacket() {
 		return;
 	case 'z':
 		removeBreakpoint();
+		break;
+	case 'T':
+		isThreadAlive();
 		break;
 	case 'Z':
 		addBreakpoint();

@@ -27,7 +27,7 @@ private:
 	guint MirrorStack(gptr dest, gptr src, guint size); // 0x04
 	guint UnmapMemory(gptr dest, gptr src, guint size); // 0x05
 	tuple<guint, guint> QueryMemory(gptr meminfo, gptr pageinfo, gptr addr); // 0x06
-	void ExitProcess(); // 0x07
+	void ExitProcess(guint exitCode); // 0x07
 	tuple<guint, guint> CreateThread(guint pc, guint x0, guint sp, guint prio, guint proc); // 0x08
 	guint StartThread(ghandle handle); // 0x09
 	void ExitThread(); // 0x0A
@@ -47,8 +47,9 @@ private:
 	guint CancelSynchronization(ghandle handle); // 0x19
 	guint LockMutex(ghandle curthread, gptr mutexAddr, ghandle reqthread); // 0x1A
 	void UnlockMutex(gptr mutexAddr); // 0x1B
-	void WaitProcessWideKeyAtomic(gptr mutexAddr, gptr semaAddr, ghandle threadHandle, guint timeout); // 0x1C
+	guint WaitProcessWideKeyAtomic(gptr mutexAddr, gptr semaAddr, ghandle threadHandle, guint timeout); // 0x1C
 	guint SignalProcessWideKey(gptr semaAddr, guint target); // 0x1D
+	guint GetSystemTick(); // 0x1E
 	tuple<guint, ghandle> ConnectToPort(guint name); // 0x1F
 	guint SendSyncRequest(ghandle handle); // 0x21
 	guint SendSyncRequestEx(gptr buf, guint size, ghandle handle); // 0x22
@@ -57,6 +58,8 @@ private:
 	guint Break(guint X0, guint X1, guint info); // 0x26
 	guint OutputDebugString(guint ptr, guint size); // 0x27
 	tuple<guint, guint> GetInfo(guint id1, ghandle handle, guint id2); // 0x29
+	guint MapPhysicalMemory(gptr addr, guint size); // 0x2C
+	guint UnmapPhysicalMemory(gptr addr, guint size); // 0x2D
 	tuple<guint, guint, guint> CreateSession(ghandle clientOut, ghandle serverOut, guint unk); // 0x40
 	tuple<guint, guint> AcceptSession(ghandle port); // 0x41
 	tuple<guint, guint> ReplyAndReceive(gptr handles, guint numHandles, ghandle replySession, guint timeout); // 0x43
@@ -67,10 +70,10 @@ private:
 	guint UnmapTransferMemory(ghandle handle, gptr addr, guint size); // 0x52
 	tuple<guint, guint> CreateInterruptEvent(guint irq); // 0x53
 	tuple<guint, guint> QueryIoMapping(gptr physaddr, guint size); // 0x55
-	tuple<guint, guint> CreateDeviceAddressSpace(guint base, guint size); // 0x56
-	tuple<guint, guint> AttachDeviceAddressSpace(ghandle handle, guint dev, gptr addr); // 0x57
-	tuple<guint, guint> MapDeviceAddressSpaceByForce(ghandle handle, ghandle phandle, gptr paddr, guint size, gptr maddr, guint perm); // 0x59
-	guint UnmapDeviceAddressSpace(guint unk0, ghandle phandle, gptr maddr, guint size); // 0x5c
+	tuple<guint, guint> CreateDeviceAddressSpace(gptr start, gptr end); // 0x56
+	guint AttachDeviceAddressSpace(guint dev, ghandle handle); // 0x57
+	guint MapDeviceAddressSpaceByForce(ghandle handle, ghandle phandle, gptr vaddr, guint size, gptr saddr, guint perm); // 0x59
+	guint UnmapDeviceAddressSpace(guint unk0, ghandle phandle, gptr maddr, guint size, gptr paddr); // 0x5c
 	guint MapProcessMemory(gptr dstaddr, ghandle handle, gptr srcaddr, guint size); // 0x74
 	guint UnmapProcessMemory(gptr dstaddr, ghandle handle, gptr srcaddr, guint size); // 0x75
 	guint MapProcessCodeMemory(ghandle handle, gptr dstaddr, gptr srcaddr, guint size); // 0x77
